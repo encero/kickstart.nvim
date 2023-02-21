@@ -79,10 +79,12 @@ local handle_test_line = function(bufnr, state, decoded)
 			local text = { "✓ " .. decoded.Elapsed .. "s",
 				"DiagnosticOk" }
 			print(vim.inspect(text))
-			vim.api.nvim_buf_set_extmark(bufnr, ns,
-				test.line, 0, {
-				virt_text = { text },
-			})
+			if bufnr > 0 then
+				vim.api.nvim_buf_set_extmark(bufnr, ns,
+					test.line, 0, {
+					virt_text = { text },
+				})
+			end
 		end
 	elseif decoded.Action == "pause" or decoded.Action == "cont" then
 		-- Do nothing
@@ -91,6 +93,17 @@ local handle_test_line = function(bufnr, state, decoded)
 	end
 end
 
+local parse_line = function(bufnr, state, line)
+	if line == '' then
+		return
+	end
+	local ok, decoded = pcall(vim.json.decode, line)
+	if ok then
+		handle_test_line(bufnr, state, decoded)
+	else
+		print("cant parse line:" .. vim.inspect(line) .. " with error:" .. decoded)
+	end
+end
 local attach_to_buffer = function(bufnr, command)
 	local state = {
 		bufnr = bufnr,
@@ -131,12 +144,7 @@ local attach_to_buffer = function(bufnr, command)
 					end
 
 					for _, line in ipairs(data) do
-						local ok, decoded = pcall(vim.json.decode, line)
-						if ok then
-							handle_test_line(bufnr, state, decoded)
-						else
-							print("cant parse line:" .. line .. " with error:" .. decoded)
-						end
+						parse_line(bufnr, state, line)
 					end
 				end,
 				on_exit = function()
@@ -163,6 +171,24 @@ local attach_to_buffer = function(bufnr, command)
 		end,
 	})
 end
+
+vim.api.nvim_create_user_command("GoTestAll", function()
+	local state = {
+		tests = {}
+	}
+
+	vim.fn.jobstart('go test ./... -v -json', {
+		on_stdout = function(_, data)
+			if not data then
+				return
+			end
+
+			for _, line in pairs(data) do
+				parse_line(0, state, line)
+			end
+		end
+	})
+end, {})
 
 vim.api.nvim_create_autocmd("BufAdd", {
 	pattern = "*_test.go",

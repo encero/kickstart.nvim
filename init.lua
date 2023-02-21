@@ -188,8 +188,6 @@ require('lazy').setup({
   { import = 'custom.plugins' },
 }, {})
 
-require 'custom.go-test'
-
 -- [[ Setting options ]]
 -- See `:help vim.o`
 
