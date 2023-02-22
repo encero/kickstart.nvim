@@ -196,6 +196,7 @@ vim.o.hlsearch = false
 
 -- Make line numbers default
 vim.wo.number = true
+vim.wo.relativenumber = true
 
 -- Enable mouse mode
 vim.o.mouse = 'a'
@@ -288,6 +289,7 @@ vim.keymap.set('n', '<leader>sh', require('telescope.builtin').help_tags, { desc
 vim.keymap.set('n', '<leader>sw', require('telescope.builtin').grep_string, { desc = '[S]earch current [W]ord' })
 vim.keymap.set('n', '<leader>sg', require('telescope.builtin').live_grep, { desc = '[S]earch by [G]rep' })
 vim.keymap.set('n', '<leader>sd', require('telescope.builtin').diagnostics, { desc = '[S]earch [D]iagnostics' })
+vim.keymap.set('n', '<leader>ls', require('telescope.builtin').resume, { desc = '[L]ast [S]earch' })
 
 -- [[ Configure Treesitter ]]
 -- See `:help nvim-treesitter`
@@ -457,7 +459,29 @@ mason_lspconfig.setup_handlers {
 local cmp = require 'cmp'
 local luasnip = require 'luasnip'
 
-luasnip.config.setup {}
+luasnip.config.setup {
+  history = true,
+  update_events = { "TextChanged", "TextChangedI" },
+  delete_check_events = { "TextChanged", "InsertLeave" },
+}
+
+vim.keymap.set({ 'i', 's' }, '<m-j>', function()
+  if luasnip.expand_or_jumpable() then
+    luasnip.expand_or_jump()
+  end
+end)
+
+vim.keymap.set({ 'i', 's' }, '<m-k>', function()
+  if luasnip.jumpable( -1) then
+    luasnip.jump( -1)
+  end
+end)
+
+vim.keymap.set({ 'i', 's' }, '<m-l>', function()
+  if luasnip.choice_active() then
+    luasnip.change_choice(1)
+  end
+end)
 
 cmp.setup {
   snippet = {
@@ -476,8 +500,8 @@ cmp.setup {
     ['<Tab>'] = cmp.mapping(function(fallback)
       if cmp.visible() then
         cmp.select_next_item()
-      elseif luasnip.expand_or_jumpable() then
-        luasnip.expand_or_jump()
+        -- elseif luasnip.expand_or_jumpable() then
+        --   luasnip.expand_or_jump()
       else
         fallback()
       end
