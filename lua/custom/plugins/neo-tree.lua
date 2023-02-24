@@ -17,6 +17,7 @@ return {
 			}
 		}
 
-		vim.keymap.set('n', '<leader>t', ':Neotree filesystem reveal<cr>', { silent = true })
+		vim.keymap.set('n', '<leader>b', ':Neotree filesystem reveal<cr>', { silent = true })
+		vim.keymap.set('n', '<leader>gb', ':Neotree git_status reveal<cr>', { silent = true })
 	end,
 }

@@ -16,49 +16,49 @@ local test_function_query_string_all = [[
 ) @test
 ]]
 
-local q                              = vim.treesitter.query
-local ts_utils                       = require 'nvim-treesitter.ts_utils'
-
-local TestStatusExecuted             = 'executed'
-local TestStatusStale                = 'stale'
-local TestStatusNew                  = 'new'
-local TestStatusRunning              = 'running'
-
-local state                          = {
-	buffers = {},
-	tests = {},
-}
-local go_package_cache               = {}
-
-local all_tests_query                = vim.treesitter.parse_query("go", test_function_query_string_all)
-local ns                             = vim.api.nvim_create_namespace "live-tests"
-
--- copy package info to all matching buffers
-local function update_buffers_with_package_info(dir)
-	local spec = go_package_cache[dir]
-
-	for _, data in pairs(state.buffers) do
-		if vim.fs.dirname(data.file) == dir then
-			data.package_data = spec
-		end
+GT_DEBUG = false
+local function db(...)
+	if GT_DEBUG then
+		print(...)
 	end
 end
 
--- read pacakge info from "go list" for given go filename and update any registered buffers after
-local function update_package_info_for_file(go_filename, callback)
-	local dir = vim.fs.dirname(go_filename)
-	if go_package_cache[dir] then
-		update_buffers_with_package_info(dir)
+local q                  = vim.treesitter.query
+local ts_utils           = require 'nvim-treesitter.ts_utils'
 
-		if callback then callback() end
+local TestStatusExecuted = 'executed'
+local TestStatusStale    = 'stale'
+local TestStatusRunning  = 'running'
+
+local test_all_command   = { 'go', 'test', './...', '-json' }
+local test_command       = test_all_command
+
+local state              = {
+	auto_run = false,
+	buffers = {},
+	tests = {},
+}
+local go_package_cache   = {}
+
+local all_tests_query    = vim.treesitter.parse_query("go", test_function_query_string_all)
+local ns                 = vim.api.nvim_create_namespace "live-tests"
+
+local function un_ansi(text)
+	return text:gsub('\x1b%[%d+;%d+;%d+;%d+;%d+m', '')
+	    :gsub('\x1b%[%d+;%d+;%d+;%d+m', '')
+	    :gsub('\x1b%[%d+;%d+;%d+m', '')
+	    :gsub('\x1b%[%d+;%d+m', '')
+	    :gsub('\x1b%[%d+m', '')
+end
+
+local function package_for_buffer(buffer, callback)
+	local dir = vim.fs.dirname(buffer.file)
+	if go_package_cache[dir] then
+		if callback then callback(go_package_cache[dir]) end
 		return
 	end
 
-	go_package_cache[dir] = {
-		status = "loading"
-	}
-
-	vim.fn.jobstart(string.format("go list -json %s", vim.fs.dirname(go_filename)), {
+	vim.fn.jobstart(string.format("go list -json %s", dir), {
 		stdout_buffered = true,
 		on_stdout = function(_, data)
 			local module = vim.fn.json_decode(data)
@@ -67,38 +67,48 @@ local function update_package_info_for_file(go_filename, callback)
 			end
 
 			go_package_cache[dir] = {
-				status = "loaded",
 				import_path = module.ImportPath or "",
 				test_files = module.TestGoFiles or {},
 				external_test_files = module.XTestGoFiles or {},
 			}
 
-			update_buffers_with_package_info(dir)
-			if callback then callback() end
+			if callback then callback(go_package_cache[dir]) end
 		end,
 	})
 end
 
-local function find_all_tests_in_buffer(go_bufnr)
-	local parser = vim.treesitter.get_parser(go_bufnr, "go", {})
+local function parse_buffer_and_find_all_tests(buffer, callback)
+	db("parse_buffer_and_find_all_tests buf:", buffer.bufnr)
+	local parser = vim.treesitter.get_parser(buffer.bufnr, "go", {})
 	local tree = parser:parse()[1]
 	local root = tree:root()
 
 	local tests = {}
 
-	-- iterate over all captures in buffer, from 0 to -1 line ( entire files )
-	for id, node in all_tests_query:iter_captures(root, go_bufnr, 0, -1) do
-		if node:type() == 'function_declaration' then
-			local test_name_node = node:field('name')[1]
+	package_for_buffer(buffer, function(package)
+		local cnt = 0
 
-			table.insert(tests, {
-				name = q.get_node_text(test_name_node, go_bufnr),
-				line = ({ test_name_node:range() })[1],
-			})
+		-- iterate over all captures in buffer, from 0 to -1 line ( entire files )
+		for _, node in all_tests_query:iter_captures(root, buffer.bufnr, 0, -1) do
+			if node:type() == 'function_declaration' then
+				local test_name_node = node:field('name')[1]
+				local name = q.get_node_text(test_name_node, buffer.bufnr)
+				local key = string.format('%s/%s', package.import_path, name)
+
+				tests[key] = {
+					key = key,
+					package = package.import_path,
+					name = name,
+					line = ({ test_name_node:range() })[1],
+				}
+
+				cnt = cnt + 1
+			end
 		end
-	end
 
-	return tests
+		db("parse_buffer_and_find_all_tests found:", cnt, "tests")
+		if callback then callback(tests) end
+	end)
 end
 
 local function make_key(entry)
@@ -120,42 +130,49 @@ local function add_golang_test(entry)
 		}
 	else
 		test.status = TestStatusRunning
+		test.output = {}
 	end
 
 	return state.tests[test_key]
 end
 
-local add_golang_output = function(entry)
-	table.insert(state.tests[make_key(entry)].output, vim.trim(entry.Output))
+local function add_golang_output(entry)
+	local text = un_ansi(vim.trim(entry.Output))
+
+	table.insert(state.tests[make_key(entry)].output, text)
 end
 
 local function mark_test_result(entry)
 	local test = state.tests[make_key(entry)]
 
-	test.success = entry.Action == "pass"
 	test.status = TestStatusExecuted
+	test.success = entry.Action == "pass"
 	test.elapsed = entry.Elapsed
 end
 
-local function find_test_in_buffers(test_key)
-	for bufnr, data in pairs(state.buffers) do
-		for _, buffer_test in ipairs(data.tests) do
-			local key = string.format('%s/%s', data.package_data.import_path, buffer_test.name)
-			if key == test_key then
-				return bufnr, buffer_test
-			end
+local function find_buffer_with_test(test)
+	for _, buffer in pairs(state.buffers) do
+		if buffer.tests[test.key] then
+			return buffer
 		end
 	end
 end
 
 local function update_test_marks(test)
-	local bufnr, buffer_test = find_test_in_buffers(test.key)
-
-	if not bufnr then
+	db("update_test_marks", test.name)
+	local buffer = find_buffer_with_test(test)
+	if not buffer then
 		return
 	end
 
-	local text = { '' }
+	if not buffer.in_window then
+		return
+	end
+
+	local buffer_test = buffer.tests[test.key]
+	assert(buffer_test, "Buffer doesn't has this test")
+
+	local text = nil
 
 	if test.status == TestStatusExecuted then
 		if test.success then
@@ -167,19 +184,19 @@ local function update_test_marks(test)
 		text = { "▶️ ", 'DiagnosticInfo' }
 	elseif test.status == TestStatusStale then
 		if test.success then
-			text = { "waiting (pass)", "DiagnosticInfo" }
+			text = { "stale (pass)", "DiagnosticInfo" }
 		else
-			text = { 'waiting (fail)', 'DiagnosticInfo' }
+			text = { 'stale (fail)', 'DiagnosticInfo' }
 		end
 	else
 		text = { "unknown", 'DiagnosticInfo' }
 	end
 
 	if buffer_test.mark then
-		vim.api.nvim_buf_del_extmark(bufnr, ns, buffer_test.mark)
+		vim.api.nvim_buf_del_extmark(buffer.bufnr, ns, buffer_test.mark)
 	end
 
-	buffer_test.mark = vim.api.nvim_buf_set_extmark(bufnr, ns,
+	buffer_test.mark = vim.api.nvim_buf_set_extmark(buffer.bufnr, ns,
 		buffer_test.line, 0, {
 		virt_text = { text },
 	})
@@ -228,107 +245,143 @@ vim.api.nvim_create_autocmd("BufWritePost", {
 	group = vim.api.nvim_create_augroup(string.format("teej-automagic-%s", bufnr), { clear = true }),
 	pattern = "*_test.go",
 	callback = function(ev)
-		state.buffers[ev.buf].tests = find_all_tests_in_buffer(ev.buf)
+		local buf = state.buffers[ev.buf]
+		parse_buffer_and_find_all_tests(buf, function(tests)
+			for _, new_test in pairs(tests) do
+				for _, old_test in pairs(buf.tests) do
+					if old_test.name == new_test.name then
+						new_test.mark = old_test.mark
+					end
+				end
+			end
+
+			buf.tests = tests
+		end)
 	end
 })
 
--- auto execute test on gofile save
-vim.api.nvim_create_autocmd("BufWritePost", {
-	group = vim.api.nvim_create_augroup(string.format("teej-automagic-%s", bufnr), { clear = true }),
-	pattern = "*.go",
-	callback = function()
-		-- clear all extmarks, highlight, etc
-		-- for bufnr, _ in ipairs(state.buffers) do
-		-- 	vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-		-- end
+local function execute_tests()
+	if not state.auto_run then
+		return
+	end
 
-		-- clean test state
-		for name, test in pairs(state.tests) do
-			test.Output = {}
-			test.status = TestStatusStale
-			update_test_marks(test)
-		end
+	-- clean test state
+	for _, test in pairs(state.tests) do
+		test.Output = {}
+		test.status = TestStatusStale
+		update_test_marks(test)
+	end
 
-		local command = { 'go', 'test', './...', '-json' }
+	vim.fn.jobstart(test_command, {
+		stdout_buffered = false,
+		on_stdout = function(_, data)
+			if not data then
+				return
+			end
 
-		vim.fn.jobstart(command, {
-			stdout_buffered = false,
-			on_stdout = function(_, data)
-				if not data then
-					return
-				end
+			for _, line in ipairs(data) do
+				parse_test_line(line)
+			end
+		end,
+		on_exit = function()
+			local failed = {}
+			for _, test in pairs(state.tests) do
+				if not test.success then
+					local buffer = find_buffer_with_test(test)
 
-				for _, line in ipairs(data) do
-					parse_test_line(line)
-				end
-			end,
-			on_exit = function()
-				local failed = {}
-				for _, test in pairs(state.tests) do
-					if test.line then
-						if not test.success then
-							table.insert(failed, {
-								bufnr = bufnr,
-								lnum = test.line,
-								col = 0,
-								severity = vim.diagnostic.severity.ERROR,
-								source = "go-test",
-								message = "Test Failed",
-								user_data = {},
-							})
+					if buffer then
+						if not failed[buffer.bufnr] then
+							failed[buffer.bufnr] = {}
 						end
+
+						table.insert(failed[buffer.bufnr], {
+							bufnr = bufnr,
+							lnum = buffer.tests[test.key].line,
+							col = 0,
+							severity = vim.diagnostic.severity.ERROR,
+							source = "go-test",
+							message = "Test Failed: " .. (test.output[2] or ""),
+							user_data = {},
+						})
 					end
 				end
+			end
 
-				-- vim.diagnostic.set(ns, bufnr, failed, {})
-			end,
-		})
+			for bufnr, fails in pairs(failed) do
+				vim.diagnostic.set(ns, bufnr, fails, {})
+			end
+		end,
+	})
+end
+
+-- auto execute test on gofile save
+vim.api.nvim_create_autocmd("BufWritePost", {
+	group = vim.api.nvim_create_augroup('encero-go-auto-test', {}),
+	pattern = "*.go",
+	callback = function()
+		execute_tests()
 	end,
 })
-
-local function find_test_at_cursor()
-	local dir = vim.fs.dirname(vim.api.nvim_buf_get_name(0))
-
-	local package = go_package_cache[dir]
-	assert(package, 'no package infor for file')
-
+local function find_test_name_at_cursor()
 	local node = ts_utils.get_node_at_cursor()
 	if not node then
+		print("no treesitter node at location")
 		return
 	end
 
 	while node do
 		if node:type() == 'function_declaration' then
-			local test_name = vim.treesitter.query.get_node_text(node:child(1), 0)
-			local key = string.format('%s/%s', package.import_path, test_name)
-
-			local test = state.tests[key]
-
-			return test
+			return vim.treesitter.query.get_node_text(node:child(1), 0)
 		end
 
 		node = node:parent()
 	end
 end
+local function find_test_at_cursor()
+	local dir = vim.fs.dirname(vim.api.nvim_buf_get_name(0))
 
+	local package = go_package_cache[dir]
+	assert(package, 'no package info for file')
 
--- experimental mapping to find the test the cursor is in
-vim.keymap.set('n', '<leader>rt', function()
-end, { silent = true })
+	local test_name = find_test_name_at_cursor()
+	return state.tests[string.format('%s/%s', package.import_path, test_name)]
+end
 
-local function register_test_buffer(ev)
+local function update_buffer_remarks(buf)
+	db("update_buffer_remarks buf", buf.bufnr)
+	for _, buf_test in pairs(buf.tests) do
+		local test = state.tests[buf_test.key]
+
+		if test then
+			update_test_marks(test)
+		end
+	end
+end
+
+local function buffer_has_entered_window(ev)
+	db("buffer_has_entered_window buf:", ev.buf)
 	-- skip already loaded buffers
 	if state.buffers[ev.buf] then
-		state.buffers[ev.buf].in_window = true
+		local buf = state.buffers[ev.buf]
+
+		buf.in_window = true
+		update_buffer_remarks(buf)
 		return
 	end
 
-	buf                   = {
+	local buf = {
+		bufnr = ev.buf,
 		in_window = true,
 		file = ev.file,
-		tests = find_all_tests_in_buffer(ev.buf),
 	}
-	state.buffers[ev.buf] = buf
+
+	parse_buffer_and_find_all_tests(buf, function(tests)
+		buf.tests             = tests
+		state.buffers[ev.buf] = buf
+
+		update_buffer_remarks(buf)
+	end)
+
 
 	-- print test output of test the cursor is at to new vsplit
 	vim.api.nvim_buf_create_user_command(ev.buf, "GoTestLineDiag", function()
@@ -343,20 +396,12 @@ local function register_test_buffer(ev)
 		vim.api.nvim_buf_set_lines(vim.api.nvim_get_current_buf(), 0, -1, false,
 			test.output) -- print test output
 	end, {})
-
-	update_package_info_for_file(ev.file, function()
-		print("after open", vim.inspect(buf))
-		for _, buf_test in ipairs(buf.tests) do
-			local key = string.format('%s/%s', buf.package_data.import_path, buf_test.name)
-			local test = state.tests[key]
-
-			if test then
-				update_test_marks(test)
-			end
-		end
-	end)
 end
 
+--[[
+        COMMANDS
+--]]
+--
 vim.api.nvim_create_user_command('GTDebug', function()
 	local ui = vim.api.nvim_list_uis()[1]
 
@@ -383,16 +428,45 @@ vim.api.nvim_create_user_command('GTDebug', function()
 	end, { buffer = buf, silent = true })
 end, {})
 
+--[[ 	
+        AUTO CMDS
+--]]
+-- set buffer as not visible in window, those are not updated with marks
 vim.api.nvim_create_autocmd({ "BufWinLeave" }, {
 	pattern = '*_test.go',
 	callback = function(ev)
 		state.buffers[ev.buf].in_window = false
 	end
 })
+
 -- attach Autotest command to buffers with go tests
 vim.api.nvim_create_autocmd({ "BufWinEnter" }, {
 	pattern = "*_test.go",
 	callback = function(ev)
-		register_test_buffer(ev)
+		buffer_has_entered_window(ev)
 	end
 })
+
+--[[
+-- KEYMAPS
+--]]
+vim.keymap.set('n', ',ta', function()
+	state.auto_run = true
+	test_command = test_all_command
+
+	execute_tests()
+end, { desc = '[T]est [A]ll' })
+
+vim.keymap.set('n', ',to', function()
+	local dir = vim.fs.dirname(vim.api.nvim_buf_get_name(0))
+
+	local test_name = find_test_name_at_cursor()
+	assert(test_name, 'No test found')
+
+	state.auto_run = true
+	test_command = { 'go', 'test', dir, '-json', '-run', string.format('^%s$', test_name) }
+
+	execute_tests()
+end, { desc = '[T]est [O]ne' })
+-- DEBUG
+-- state.auto_run = true
