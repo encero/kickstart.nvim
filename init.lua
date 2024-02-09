@@ -275,7 +275,12 @@ pcall(require('telescope').load_extension, 'fzf')
 
 -- See `:help telescope.builtin`
 vim.keymap.set('n', '<leader>?', require('telescope.builtin').oldfiles, { desc = '[?] Find recently opened files' })
-vim.keymap.set('n', '<leader><space>', require('telescope.builtin').buffers, { desc = '[ ] Find existing buffers' })
+vim.keymap.set('n', '<leader><space>', function()
+  require('telescope.builtin').buffers {
+    sort_lasused = true,
+    sort_mru = true,
+  }
+end, { desc = '[ ] Find existing buffers' })
 vim.keymap.set('n', '<leader>/', function()
   require('telescope.builtin').current_buffer_fuzzy_find()
 end, { desc = '[/] Fuzzily search in current buffer' })
@@ -291,7 +296,7 @@ vim.keymap.set('n', '<leader>ls', require('telescope.builtin').resume, { desc = 
 -- See `:help nvim-treesitter`
 require('nvim-treesitter.configs').setup {
   -- Add languages to be installed here that you want installed for treesitter
-  ensure_installed = { 'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'typescript', 'help', 'vim' },
+  ensure_installed = { 'c', 'cpp', 'go', 'lua', 'python', 'rust', 'tsx', 'typescript', 'help', 'vim', 'elixir' },
 
   -- Autoinstall languages that are not installed. Defaults to false (but you can change for yourself!)
   auto_install = false,
@@ -449,6 +454,22 @@ mason_lspconfig.setup_handlers {
       settings = servers[server_name],
     }
   end,
+}
+
+require('lspconfig')['rust_analyzer'].setup {
+  capabilities = capabilities,
+  on_attach = on_attach,
+  settings = {
+  },
+  cmd = { 'rustup', 'run', 'stable', 'rust-analyzer' },
+}
+
+require('lspconfig')['elixirls'].setup {
+  capabilities = capabilities,
+  on_attach = on_attach,
+  settings = {
+  },
+  cmd = { "/Users/matous/bin/elixir/language_server.sh" },
 }
 
 -- nvim-cmp setup

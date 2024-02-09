@@ -241,24 +241,24 @@ local function parse_test_line(line)
 	end
 end
 
-vim.api.nvim_create_autocmd("BufWritePost", {
-	group = vim.api.nvim_create_augroup(string.format("teej-automagic-%s", bufnr), { clear = true }),
-	pattern = "*_test.go",
-	callback = function(ev)
-		local buf = state.buffers[ev.buf]
-		parse_buffer_and_find_all_tests(buf, function(tests)
-			for _, new_test in pairs(tests) do
-				for _, old_test in pairs(buf.tests) do
-					if old_test.name == new_test.name then
-						new_test.mark = old_test.mark
-					end
-				end
-			end
-
-			buf.tests = tests
-		end)
-	end
-})
+-- vim.api.nvim_create_autocmd("BufWritePost", {
+-- 	group = vim.api.nvim_create_augroup(string.format("teej-automagic-%s", bufnr), { clear = true }),
+-- 	pattern = "*_test.go",
+-- 	callback = function(ev)
+-- 		local buf = state.buffers[ev.buf]
+-- 		parse_buffer_and_find_all_tests(buf, function(tests)
+-- 			for _, new_test in pairs(tests) do
+-- 				for _, old_test in pairs(buf.tests) do
+-- 					if old_test.name == new_test.name then
+-- 						new_test.mark = old_test.mark
+-- 					end
+-- 				end
+-- 			end
+--
+-- 			buf.tests = tests
+-- 		end)
+-- 	end
+-- })
 
 local function execute_tests()
 	if not state.auto_run then
@@ -315,13 +315,13 @@ local function execute_tests()
 end
 
 -- auto execute test on gofile save
-vim.api.nvim_create_autocmd("BufWritePost", {
-	group = vim.api.nvim_create_augroup('encero-go-auto-test', {}),
-	pattern = "*.go",
-	callback = function()
-		execute_tests()
-	end,
-})
+-- vim.api.nvim_create_autocmd("BufWritePost", {
+-- 	group = vim.api.nvim_create_augroup('encero-go-auto-test', {}),
+-- 	pattern = "*.go",
+-- 	callback = function()
+-- 		execute_tests()
+-- 	end,
+-- })
 local function find_test_name_at_cursor()
 	local node = ts_utils.get_node_at_cursor()
 	if not node then
@@ -432,32 +432,32 @@ end, {})
         AUTO CMDS
 --]]
 -- set buffer as not visible in window, those are not updated with marks
-vim.api.nvim_create_autocmd({ "BufWinLeave" }, {
-	pattern = '*_test.go',
-	callback = function(ev)
-		state.buffers[ev.buf].in_window = false
-	end
-})
+-- vim.api.nvim_create_autocmd({ "BufWinLeave" }, {
+-- 	pattern = '*_test.go',
+-- 	callback = function(ev)
+-- 		state.buffers[ev.buf].in_window = false
+-- 	end
+-- })
 
 -- attach Autotest command to buffers with go tests
-vim.api.nvim_create_autocmd({ "BufWinEnter" }, {
-	pattern = "*_test.go",
-	callback = function(ev)
-		buffer_has_entered_window(ev)
-	end
-})
+-- vim.api.nvim_create_autocmd({ "BufWinEnter" }, {
+-- 	pattern = "*_test.go",
+-- 	callback = function(ev)
+-- 		buffer_has_entered_window(ev)
+-- 	end
+-- })
 
 --[[
 -- KEYMAPS
 --]]
-vim.keymap.set('n', ',ta', function()
+vim.keymap.set('n', '<leader>ta', function()
 	state.auto_run = true
 	test_command = test_all_command
 
 	execute_tests()
 end, { desc = '[T]est [A]ll' })
 
-vim.keymap.set('n', ',to', function()
+vim.keymap.set('n', '<leader>to', function()
 	local dir = vim.fs.dirname(vim.api.nvim_buf_get_name(0))
 
 	local test_name = find_test_name_at_cursor()
